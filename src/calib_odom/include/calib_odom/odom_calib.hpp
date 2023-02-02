@@ -15,7 +15,7 @@ class OdomCalib {
 
   // virtual ~OdomCalib();
   void SetDataLen(int len);
-  void AddData(Eigen::Vector3d odom, Eigen::Vector3d scan);
+  bool AddData(Eigen::Vector3d odom, Eigen::Vector3d scan);
   Eigen::Matrix3d Solve();
   bool IsFull();
   void SetDataZero();

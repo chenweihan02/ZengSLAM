@@ -24,7 +24,7 @@
 #include <pcl/registration/icp.h>
 #include <pcl/registration/icp_nl.h>
 #include <pcl/registration/registration.h>
-#include <pcl/point_clound.h>
+#include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/features/normal_3d.h>
 #include <pcl/filters/filter.h>
@@ -33,7 +33,7 @@
 #include <eigen3/Eigen/Core>
 #include <eigen3/Eigen/Dense>
 
-#include "odom_calib.hpp"
+#include "../include/calib_odom/odom_calib.hpp"
 #include <csm/csm_all.h>
 
 using namespace std;
@@ -44,7 +44,7 @@ OdomCalib odom_calib;
 
 std::vector<geometry_msgs::PointStamped> mcu_path;
 
-Eigen::Vector3d cal_delete_distence(Eigen::Vector3d odom_pose);
+Eigen::Vector3d cal_delta_distence(Eigen::Vector3d odom_pose);
 
 /*
 获取激光数据类
@@ -58,7 +58,7 @@ class Scan2 {
     sm_params m_PIICPParams;
     sm_result m_OutputResult;
 
-    //odom && scan进行位姿积分
+    //odom & scan进行位姿积分
     Eigen::Vector3d scan_pos_cal;
     Eigen::Vector3d odom_pos_cal;
 
@@ -79,10 +79,10 @@ class Scan2 {
     ros::Time current_time;
 
     //　进行时间同步
-    message_filters::Subscrible<sensor_msgs::LaserScan>* scan_filter_sub_;
+    message_filters::Subscriber<sensor_msgs::LaserScan>* scan_filter_sub_;
     tf::MessageFilter<sensor_msgs::LaserScan>* scan_filter_;
 
-    void CalibFlagCallBack(const std_msgs::Empty &msg);
+    void CalibFlagCallBack(const std_msgs::Empty& msg);
 
     //回调函数
     void scanCallBack(const sensor_msgs::LaserScan::ConstPtr& scan2);
@@ -119,7 +119,7 @@ void Scan2::pub_msg(Eigen::Vector3d& pose, nav_msgs::Path& path, ros::Publisher&
   this_pose_stamped.header.stamp = current_time;
   this_pose_stamped.header.frame_id = "odom";
   path.poses.push_back(this_pose_stamped);
-  mcu_path_pub_.pushlish(path);
+  mcu_path_pub_.publish(path);
 }
 
 void Scan2::publishPathEigen(std::vector<Eigen::Vector3d>& path_eigen, ros::Publisher& path_pub_) {
@@ -132,7 +132,7 @@ void Scan2::publishPathEigen(std::vector<Eigen::Vector3d>& path_eigen, ros::Publ
 
   geometry_msgs::PoseStamped tmpPose;
   tmpPose.header.stamp = current_time;
-  temPose.header.frame_id = "odom";
+  tmpPose.header.frame_id = "odom";
 
   for (int i = 0; i < path_eigen.size(); i ++ ) {
     Eigen::Vector3d poseEigen = path_eigen[i];
@@ -146,7 +146,7 @@ void Scan2::publishPathEigen(std::vector<Eigen::Vector3d>& path_eigen, ros::Publ
     tmpPose.pose.orientation.z = goal_quat.z;
     tmpPose.pose.orientation.w = goal_quat.w;
 
-    visual_path.pose.push_back(tmpPose);
+    visual_path.poses.push_back(tmpPose);
   }
   path_pub_.publish(visual_path);
 }
@@ -185,32 +185,32 @@ Scan2::Scan2() {
   m_prevLDP = NULL;
   SetPIICPParams();
 
-  scan_pose_cal.setZero();
-  odom_pose_cal.setZero();
+  scan_pos_cal.setZero();
+  odom_pos_cal.setZero();
   odom_increments.clear();
 
   if (!private_nh_.getParam("odom_frame", odom_frame_))
-    odom_frame = "odom";
+    odom_frame_ = "odom";
   if (!private_nh_.getParam("base_frame", base_frame_))
-    base_frame = "base_link";
+    base_frame_ = "base_link";
 
   //订阅对应对topic　接收到这个topic　系统就开始进行最小二乘对解算
-  calib_flag_sub_ = node_.subscrible("calib_flag", 5, &Scan2::CalibFlagCallBack, this);
+  calib_flag_sub_ = node_.subscribe("calib_flag", 5, &Scan2::CalibFlagCallBack, this);
 
   //发布路径
   odom_path_pub_ = node_.advertise<nav_msgs::Path>("odom_path_pub_", 1, true);
   scan_path_pub_ = node_.advertise<nav_msgs::Path>("scan_path_pub_", 1, true);
-  calib_path_pub_ = node.advertise<nav_msgs::Path>("calib_path_pub_", 1, true);
+  calib_path_pub_ = node_.advertise<nav_msgs::Path>("calib_path_pub_", 1, true);
   current_time = ros::Time::now();
 
   path_odom.header.stamp = current_time;
   path_scan.header.stamp = current_time;
   path_odom.header.frame_id = "odom";
-  path.odom.header.frame_id = "odom";
+  path_scan.header.frame_id = "odom";
 
   //进行里程计和激光雷达数据同步
   scan_filter_sub_ = new message_filters::Subscriber<sensor_msgs::LaserScan>(node_, "/sick_scan", 10);
-  scan_filter_ = new tf::MessageFilter<sensor_msgs::LaserScan>(*scan_filter_sub_, odom_frame_, 10);
+  scan_filter_ = new tf::MessageFilter<sensor_msgs::LaserScan>(*scan_filter_sub_, tf_, odom_frame_, 10);
   scan_filter_->registerCallback(boost::bind(&Scan2::scanCallBack, this, _1));
 
 
@@ -219,7 +219,7 @@ Scan2::Scan2() {
 
 //订阅topic表示开始标定
 void Scan2::CalibFlagCallBack(const std_msgs::Empty &msg) {
-  Eigen::Matrix3d correct_matrix = Odom_calib.Solve();
+  Eigen::Matrix3d correct_matrix = odom_calib.Solve();
   Eigen::Matrix3d tmp_transform_matrix;
   std::cout << "correct_matrix: " << std::endl << correct_matrix << std::endl;
 
@@ -232,7 +232,7 @@ void Scan2::CalibFlagCallBack(const std_msgs::Empty &msg) {
     Eigen::Vector3d correct_inc = correct_matrix * odom_inc;
 
     tmp_transform_matrix << cos(calib_pos(2)), -sin(calib_pos(2)), 0,
-                            sin(calib_pos(2)), cos(calib_pos(2)), 0
+                            sin(calib_pos(2)), cos(calib_pos(2)), 0,
                             0, 0, 1;
     
     calib_pos += tmp_transform_matrix * correct_inc;
@@ -255,7 +255,7 @@ void Scan2::scanCallBack(const sensor_msgs::LaserScan::ConstPtr &_laserScanMsg) 
   Eigen::Vector3d odom_pose;          //激光对应的里程计位姿
   Eigen::Vector3d d_point_odom;       //里程计计算的dpose
   Eigen::Vector3d d_point_scan;       //激光的scanmath计算的dpose
-  Eigen::VectorXd transform_matrix(3, 3); //临时变量
+  Eigen::MatrixXd transform_matrix(3, 3); //临时变量
 
   double c, s;
   scan = *_laserScanMsg;
@@ -265,7 +265,7 @@ void Scan2::scanCallBack(const sensor_msgs::LaserScan::ConstPtr &_laserScanMsg) 
     return ;
 
   //前后两帧里程计的位姿差
-  d_point_odom = cal_delta_distance(odom_pose);
+  d_point_odom = cal_delta_distence(odom_pose);
 
   //如果运动的距离太短，则不进行处理
   if (d_point_odom(0) < 0.05 &&
@@ -298,7 +298,7 @@ void Scan2::scanCallBack(const sensor_msgs::LaserScan::ConstPtr &_laserScanMsg) 
                       s,  c, 0,
                       0,  0, 1;
   
-  scan_pos_cal += (transform_matrix * d_point_scan);
+  scan_pos_cal += (transform_matrix*d_point_scan);
 
   //里程计累计的位姿
   c = cos(odom_pos_cal(2));
@@ -307,7 +307,7 @@ void Scan2::scanCallBack(const sensor_msgs::LaserScan::ConstPtr &_laserScanMsg) 
                       s,  c, 0,
                       0,  0, 1;
   
-  odom_pos_cal += (transform_matrix * d_point_odom);
+  odom_pos_cal += (transform_matrix*d_point_odom);
 
 
   //放到路径当中 for visualization
@@ -410,7 +410,7 @@ void Scan2::SetPIICPParams() {
 }
 
 //把激光雷达数据　转换为PL-ICP需要的数据
-void Scan2::LaserScanToLDP(sensor_msgs::LaserScan *psan, LDP& ldp) {
+void Scan2::LaserScanToLDP(sensor_msgs::LaserScan *pScan, LDP& ldp) {
   int nPts = pScan->intensities.size();
   ldp = ld_alloc_new(nPts);
 
